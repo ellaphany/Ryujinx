@@ -430,6 +430,11 @@ namespace Ryujinx.Ui.Windows
             ConfigurationState.Instance.Graphics.ResScale.Value                = int.Parse(_resScaleCombo.ActiveId);
             ConfigurationState.Instance.Graphics.ResScaleCustom.Value          = resScaleCustom;
 
+            if (_audioBackendSelect.GetActiveIter(out TreeIter activeIter))
+            {
+                ConfigurationState.Instance.System.AudioBackend.Value = (AudioBackend)_audioBackendStore.GetValue(activeIter, 1);
+            }
+
             ConfigurationState.Instance.ToFileFormat().SaveConfig(Program.ConfigurationPath);
             _parent.UpdateGraphicsConfig();
             ThemeHelper.ApplyTheme();
