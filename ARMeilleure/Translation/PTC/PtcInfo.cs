@@ -36,7 +36,7 @@ namespace ARMeilleure.Translation.PTC
             RelocEntriesCount++;
         }
 
-        public void WriteUnwindInfo(UnwindInfo unwindInfo)
+        public void WriteUnwindInfo(in UnwindInfo unwindInfo)
         {
             _unwindInfoWriter.Write((int)unwindInfo.PushEntries.Length);
 

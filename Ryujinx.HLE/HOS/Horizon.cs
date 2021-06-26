@@ -8,22 +8,22 @@ using Ryujinx.Audio.Integration;
 using Ryujinx.Audio.Output;
 using Ryujinx.Audio.Renderer.Device;
 using Ryujinx.Audio.Renderer.Server;
+using Ryujinx.Common;
+using Ryujinx.Configuration;
 using Ryujinx.HLE.FileSystem.Content;
-using Ryujinx.HLE.HOS.Applets;
 using Ryujinx.HLE.HOS.Font;
 using Ryujinx.HLE.HOS.Kernel;
 using Ryujinx.HLE.HOS.Kernel.Memory;
 using Ryujinx.HLE.HOS.Kernel.Process;
 using Ryujinx.HLE.HOS.Kernel.Threading;
 using Ryujinx.HLE.HOS.Services;
-using Ryujinx.HLE.HOS.Services.Account.Acc;
 using Ryujinx.HLE.HOS.Services.Am.AppletAE.AllSystemAppletProxiesService.SystemAppletProxy;
 using Ryujinx.HLE.HOS.Services.Apm;
 using Ryujinx.HLE.HOS.Services.Arp;
 using Ryujinx.HLE.HOS.Services.Audio.AudioRenderer;
 using Ryujinx.HLE.HOS.Services.Caps;
 using Ryujinx.HLE.HOS.Services.Mii;
-using Ryujinx.HLE.HOS.Services.Nfc.Nfp.NfpManager;
+using Ryujinx.HLE.HOS.Services.Nfc.Nfp.UserManager;
 using Ryujinx.HLE.HOS.Services.Nv;
 using Ryujinx.HLE.HOS.Services.Nv.NvDrvServices.NvHostCtrl;
 using Ryujinx.HLE.HOS.Services.Pcv.Bpc;
@@ -85,7 +85,6 @@ namespace Ryujinx.HLE.HOS
         internal KSharedMemory IirsSharedMem { get; private set; }
         internal SharedFontManager Font { get; private set; }
 
-        internal AccountManager AccountManager { get; private set; }
         internal ContentManager ContentManager { get; private set; }
         internal CaptureManager CaptureManager { get; private set; }
 
@@ -103,20 +102,20 @@ namespace Ryujinx.HLE.HOS
 
         public int GlobalAccessLogMode { get; set; }
 
-        internal SharedMemoryStorage HidStorage { get; private set; }
+        internal ulong HidBaseAddress { get; private set; }
 
         internal NvHostSyncpt HostSyncpoint { get; private set; }
 
         internal LibHac.Horizon LibHacHorizonServer { get; private set; }
         internal HorizonClient LibHacHorizonClient { get; private set; }
 
-        public Horizon(Switch device)
+        public Horizon(Switch device, ContentManager contentManager, MemoryConfiguration memoryConfiguration)
         {
             KernelContext = new KernelContext(
                 device,
                 device.Memory,
-                device.Configuration.MemoryConfiguration.ToKernelMemorySize(),
-                device.Configuration.MemoryConfiguration.ToKernelMemoryArrange());
+                memoryConfiguration.ToKernelMemorySize(),
+                memoryConfiguration.ToKernelMemoryArrange());
 
             Device = device;
 
@@ -128,50 +127,44 @@ namespace Ryujinx.HLE.HOS
 
             // Note: This is not really correct, but with HLE of services, the only memory
             // region used that is used is Application, so we can use the other ones for anything.
-            KMemoryRegionManager region = KernelContext.MemoryManager.MemoryRegions[(int)MemoryRegion.NvServices];
+            KMemoryRegionManager region = KernelContext.MemoryRegions[(int)MemoryRegion.NvServices];
 
             ulong hidPa  = region.Address;
             ulong fontPa = region.Address + HidSize;
             ulong iirsPa = region.Address + HidSize + FontSize;
             ulong timePa = region.Address + HidSize + FontSize + IirsSize;
 
+            HidBaseAddress = hidPa - DramMemoryMap.DramBase;
+
             KPageList hidPageList  = new KPageList();
             KPageList fontPageList = new KPageList();
             KPageList iirsPageList = new KPageList();
             KPageList timePageList = new KPageList();
 
-            hidPageList.AddRange(hidPa,  HidSize  / KPageTableBase.PageSize);
-            fontPageList.AddRange(fontPa, FontSize / KPageTableBase.PageSize);
-            iirsPageList.AddRange(iirsPa, IirsSize / KPageTableBase.PageSize);
-            timePageList.AddRange(timePa, TimeSize / KPageTableBase.PageSize);
+            hidPageList .AddRange(hidPa,  HidSize  / KMemoryManager.PageSize);
+            fontPageList.AddRange(fontPa, FontSize / KMemoryManager.PageSize);
+            iirsPageList.AddRange(iirsPa, IirsSize / KMemoryManager.PageSize);
+            timePageList.AddRange(timePa, TimeSize / KMemoryManager.PageSize);
 
-            var hidStorage = new SharedMemoryStorage(KernelContext, hidPageList);
-            var fontStorage = new SharedMemoryStorage(KernelContext, fontPageList);
-            var iirsStorage = new SharedMemoryStorage(KernelContext, iirsPageList);
-            var timeStorage = new SharedMemoryStorage(KernelContext, timePageList);
+            HidSharedMem  = new KSharedMemory(KernelContext, hidPageList,  0, 0, KMemoryPermission.Read);
+            FontSharedMem = new KSharedMemory(KernelContext, fontPageList, 0, 0, KMemoryPermission.Read);
+            IirsSharedMem = new KSharedMemory(KernelContext, iirsPageList, 0, 0, KMemoryPermission.Read);
 
-            HidStorage = hidStorage;
+            KSharedMemory timeSharedMemory = new KSharedMemory(KernelContext, timePageList, 0, 0, KMemoryPermission.Read);
 
-            HidSharedMem  = new KSharedMemory(KernelContext, hidStorage,  0, 0, KMemoryPermission.Read);
-            FontSharedMem = new KSharedMemory(KernelContext, fontStorage, 0, 0, KMemoryPermission.Read);
-            IirsSharedMem = new KSharedMemory(KernelContext, iirsStorage, 0, 0, KMemoryPermission.Read);
-
-            KSharedMemory timeSharedMemory = new KSharedMemory(KernelContext, timeStorage, 0, 0, KMemoryPermission.Read);
-
-            TimeServiceManager.Instance.Initialize(device, this, timeSharedMemory, timeStorage, TimeSize);
+            TimeServiceManager.Instance.Initialize(device, this, timeSharedMemory, timePa - DramMemoryMap.DramBase, TimeSize);
 
             AppletState = new AppletStateMgr(this);
 
             AppletState.SetFocus(true);
 
-            Font = new SharedFontManager(device, fontStorage);
+            Font = new SharedFontManager(device, fontPa - DramMemoryMap.DramBase);
 
             VsyncEvent = new KEvent(KernelContext);
 
             DisplayResolutionChangeEvent = new KEvent(KernelContext);
 
-            AccountManager = device.Configuration.AccountManager;
-            ContentManager = device.Configuration.ContentManager;
+            ContentManager = contentManager;
             CaptureManager = new CaptureManager(device);
 
             // TODO: use set:sys (and get external clock source id from settings)
@@ -183,7 +176,7 @@ namespace Ryujinx.HLE.HOS
             TimeSpanType systemTime = TimeSpanType.FromSeconds((long)rtcValue);
 
             // Configure and setup internal offset
-            TimeSpanType internalOffset = TimeSpanType.FromSeconds(device.Configuration.SystemTimeOffset);
+            TimeSpanType internalOffset = TimeSpanType.FromSeconds(ConfigurationState.Instance.System.SystemTimeOffset);
 
             TimeSpanType systemTimeOffset = new TimeSpanType(systemTime.NanoSeconds + internalOffset.NanoSeconds);
 
@@ -222,6 +215,8 @@ namespace Ryujinx.HLE.HOS
             HostSyncpoint = new NvHostSyncpt(device);
 
             SurfaceFlinger = new SurfaceFlinger(device);
+
+            ConfigurationState.Instance.System.EnableDockedMode.Event += OnDockedModeChange;
 
             InitLibHacHorizon();
             InitializeAudioRenderer();
@@ -276,7 +271,6 @@ namespace Ryujinx.HLE.HOS
         public void InitializeServices()
         {
             IUserInterface sm = new IUserInterface(KernelContext);
-            sm.TrySetServer(new ServerBase(KernelContext, "SmServer", () => new IUserInterface(KernelContext)));
 
             // Wait until SM server thread is done with initialization,
             // only then doing connections to SM is safe.
@@ -315,31 +309,27 @@ namespace Ryujinx.HLE.HOS
             LibHacHorizonClient = ryujinxClient;
         }
 
-        public void ChangeDockedModeState(bool newState)
+        private void OnDockedModeChange(object sender, ReactiveEventArgs<bool> e)
         {
-            if (newState != State.DockedMode)
+            if (e.NewValue != State.DockedMode)
             {
-                State.DockedMode = newState;
+                State.DockedMode = e.NewValue;
                 PerformanceState.PerformanceMode = State.DockedMode ? PerformanceMode.Boost : PerformanceMode.Default;
 
-                AppletState.Messages.Enqueue(AppletMessage.OperationModeChanged);
-                AppletState.Messages.Enqueue(AppletMessage.PerformanceModeChanged);
+                AppletState.Messages.Enqueue(MessageInfo.OperationModeChanged);
+                AppletState.Messages.Enqueue(MessageInfo.PerformanceModeChanged);
                 AppletState.MessageEvent.ReadableEvent.Signal();
 
                 SignalDisplayResolutionChange();
 
-                Device.Configuration.RefreshInputConfig?.Invoke();
+                // Reconfigure controllers
+                Device.Hid.RefreshInputConfig(ConfigurationState.Instance.Hid.InputConfig.Value);
             }
-        }
-
-        public void ReturnFocus()
-        {
-            AppletState.SetFocus(true);
         }
 
         public void SimulateWakeUpMessage()
         {
-            AppletState.Messages.Enqueue(AppletMessage.Resume);
+            AppletState.Messages.Enqueue(MessageInfo.Resume);
             AppletState.MessageEvent.ReadableEvent.Signal();
         }
 
@@ -389,6 +379,8 @@ namespace Ryujinx.HLE.HOS
         {
             if (!_isDisposed && disposing)
             {
+                ConfigurationState.Instance.System.EnableDockedMode.Event -= OnDockedModeChange;
+
                 _isDisposed = true;
 
                 KProcess terminationProcess = new KProcess(KernelContext);
@@ -403,7 +395,6 @@ namespace Ryujinx.HLE.HOS
                         foreach (KProcess process in KernelContext.Processes.Values.Where(x => x.Flags.HasFlag(ProcessCreationFlags.IsApplication)))
                         {
                             process.Terminate();
-                            process.DecrementReferenceCount();
                         }
 
                         // The application existed, now surface flinger can exit too.
@@ -414,10 +405,7 @@ namespace Ryujinx.HLE.HOS
                         foreach (KProcess process in KernelContext.Processes.Values.Where(x => !x.Flags.HasFlag(ProcessCreationFlags.IsApplication)))
                         {
                             process.Terminate();
-                            process.DecrementReferenceCount();
                         }
-
-                        KernelContext.Processes.Clear();
                     }
 
                     // Exit ourself now!

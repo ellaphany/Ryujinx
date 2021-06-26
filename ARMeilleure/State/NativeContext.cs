@@ -14,11 +14,10 @@ namespace ARMeilleure.State
             public fixed uint Flags[RegisterConsts.FlagsCount];
             public fixed uint FpFlags[RegisterConsts.FpFlagsCount];
             public int Counter;
-            public ulong DispatchAddress;
+            public ulong CallAddress;
             public ulong ExclusiveAddress;
             public ulong ExclusiveValueLow;
             public ulong ExclusiveValueHigh;
-            public int Running;
         }
 
         private static NativeCtxStorage _dummyStorage = new NativeCtxStorage();
@@ -118,10 +117,7 @@ namespace ARMeilleure.State
         public int GetCounter() => GetStorage().Counter;
         public void SetCounter(int value) => GetStorage().Counter = value;
 
-        public bool GetRunning() => GetStorage().Running != 0;
-        public void SetRunning(bool value) => GetStorage().Running = value ? 1 : 0;
-
-        public unsafe static int GetRegisterOffset(Register reg)
+        public unsafe static int GetRegisterOffset(in Register reg)
         {
             if (reg.Type == RegisterType.Integer)
             {
@@ -166,9 +162,9 @@ namespace ARMeilleure.State
             return StorageOffset(ref _dummyStorage, ref _dummyStorage.Counter);
         }
 
-        public static int GetDispatchAddressOffset()
+        public static int GetCallAddressOffset()
         {
-            return StorageOffset(ref _dummyStorage, ref _dummyStorage.DispatchAddress);
+            return StorageOffset(ref _dummyStorage, ref _dummyStorage.CallAddress);
         }
 
         public static int GetExclusiveAddressOffset()
@@ -179,11 +175,6 @@ namespace ARMeilleure.State
         public static int GetExclusiveValueOffset()
         {
             return StorageOffset(ref _dummyStorage, ref _dummyStorage.ExclusiveValueLow);
-        }
-
-        public static int GetRunningOffset()
-        {
-            return StorageOffset(ref _dummyStorage, ref _dummyStorage.Running);
         }
 
         private static int StorageOffset<T>(ref NativeCtxStorage storage, ref T target)
